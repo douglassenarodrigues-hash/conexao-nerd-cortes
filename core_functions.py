@@ -12,11 +12,22 @@ def configurar_gemini(api_key):
     genai.configure(api_key=api_key)
 
 def extrair_video_id(url):
-    # Remove parâmetros de compartilhamento como ?si= para não quebrar a ID
+    try:
+        ydl_opts = {'quiet': True, 'extract_flat': True}
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if 'id' in info:
+                return info['id']
+    except Exception as e:
+        print(f"Erro ao extrair ID com yt_dlp: {e}")
+    
+    # Caso falhe, usa uma limpeza manual atualizada para links curtos
     if "youtu.be/" in url:
-        video_id = url.split("youtu.be/")[1].split("?")[0].split("&")[0]
+        # Pega a parte após o youtu.be/ e limpa qualquer interrogação
+        parte_id = url.split("youtu.be/")[1]
+        video_id = parte_id.split("?")[0].split("&")[0]
         return video_id
-
+        
     padrao = r'(?:v=|\/shorts\/|\/embed\/|\/v\/|\/el\/|watch\?v=)([^#\&\?]*).*'
     match = re.search(padrao, url)
     return match.group(1) if match else None
