@@ -5,3 +5,4 @@ mediapipe
 numpy
 openai-whisper
 moviepy
+opencv-python-headless
