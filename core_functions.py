@@ -40,9 +40,17 @@ def obtener_transcricao_com_timestamps(url):
 
         if not os.path.exists(audio_temp):
             return None
+# Carrega o modelo de forma ultra otimizada para servidores em nuvem
+model = WhisperModel("base", device="cpu", compute_type="int8")
+segmentos, info = model.transcribe(audio_temp, beam_size=5, language="pt")
 
-        model = whisper.load_model("base")
-        resultado = model.transcribe(audio_temp, language="pt")
+texto_estruturado = ""
+for segmento in segmentos:
+    tempo_inicio = int(segmento.start)
+    minutos = tempo_inicio // 60
+    segundos = tempo_inicio % 60
+    timestamp = f"[{minutos:02d}:{segundos:02d}]"
+    texto_estruturado += f"{timestamp} {segmento.text}\n"
 
         texto_estruturado = ""
         for segmento in resultado['segments']:
