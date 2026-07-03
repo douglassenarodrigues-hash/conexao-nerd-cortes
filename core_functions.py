@@ -11,7 +11,7 @@ import google.generativeai as genai
 def configurar_gemini(api_key):
     genai.configure(api_key=api_key)
 
-def def extrair_video_id(url):
+def extrair_video_id(url):
     # Remove parâmetros de compartilhamento como ?si= para não quebrar a ID
     if "youtu.be/" in url:
         video_id = url.split("youtu.be/")[1].split("?")[0].split("&")[0]
