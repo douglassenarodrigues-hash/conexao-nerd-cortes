@@ -1,12 +1,12 @@
 import os
 import re
 import json
-import cv2
 import numpy as np
 import mediapipe as mp
 import yt_dlp
 import whisper
 import google.generativeai as genai
+from moviepy.editor import VideoFileClip
 
 # Configuração da API do Gemini
 def configurar_gemini(api_key):
@@ -20,11 +20,10 @@ def extrair_video_id(url):
     match = re.search(padrao, url)
     return match.group(1) if match else "video_generic"
 
-# NOVA FUNÇÃO: Baixa o áudio e usa a IA Whisper para transcrever tudo de forma independente
-def obter_transcricao_com_timestamps(url):
+# Baixa o áudio e usa a IA Whisper para transcrever tudo de forma independente
+def obtener_transcricao_com_timestamps(url):
     audio_temp = "temp_audio.mp3"
     
-    # Configuração do yt-dlp para baixar apenas o áudio o mais rápido possível
     ydl_opts = {
         'format': 'bestaudio/best',
         'outtmpl': 'temp_audio',
@@ -35,7 +34,6 @@ def obter_transcricao_com_timestamps(url):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
         
-        # Garante a extensão correta caso o formato mude (webm, m4a, etc.)
         if os.path.exists("temp_audio"): os.rename("temp_audio", audio_temp)
         elif os.path.exists("temp_audio.webm"): os.rename("temp_audio.webm", audio_temp)
         elif os.path.exists("temp_audio.m4a"): os.rename("temp_audio.m4a", audio_temp)
@@ -43,11 +41,9 @@ def obter_transcricao_com_timestamps(url):
         if not os.path.exists(audio_temp):
             return None
 
-        # Carrega o modelo Whisper do pacote open-ai (versão 'base' é ideal para o servidor)
         model = whisper.load_model("base")
         resultado = model.transcribe(audio_temp, language="pt")
 
-        # Estrutura a fala com os minutos e segundos para o Gemini analisar
         texto_estruturado = ""
         for segmento in resultado['segments']:
             tempo_inicio = int(segmento['start'])
@@ -56,7 +52,6 @@ def obter_transcricao_com_timestamps(url):
             timestamp = f"[{minutos:02d}:{segundos:02d}]"
             texto_estruturado += f"{timestamp} {segmento['text']}\n"
 
-        # Limpa o arquivo de áudio temporário para economizar espaço no servidor
         if os.path.exists(audio_temp): 
             os.remove(audio_temp)
         
@@ -64,8 +59,7 @@ def obter_transcricao_com_timestamps(url):
 
     except Exception as e:
         print(f"Erro na transcrição por áudio: {e}")
-        if os.path.exists(audio_temp): 
-            os.remove(audio_temp)
+        if os.path.exists(audio_temp): os.remove(audio_temp)
         return None
 
 # IA do Gemini analisando onde estão os picos de retenção para criar os 7 Shorts
@@ -98,85 +92,85 @@ def analisar_cortes_com_gemini(transcricao_texto):
         print(f"Erro ao decodificar JSON do Gemini: {e}")
         return None
 
-# Motor de processamento de imagem 9:16 com a IA que segue o rosto (MediaPipe + OpenCV)
+# Processamento de imagem 9:16 usando MoviePy e MediaPipe (Sem OpenCV/cv2!)
 def baixar_e_recortar_dinamico(url, inicio_seg, fim_seg, nome_saida="corte_vertical.mp4"):
+    video_temp = "temp_video.mp4"
     ydl_opts = {
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        'outtmpl': 'temp_video.mp4',
+        'outtmpl': 'temp_video',
         'quiet': True
     }
     
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
         
-    if not os.path.exists("temp_video.mp4"):
+    if os.path.exists("temp_video"): os.rename("temp_video", video_temp)
+    
+    if not os.path.exists(video_temp):
         return False
 
-    # Inicializa o detector facial do Google
-    mp_face_detection = mp.solutions.face_detection
-    face_detection = mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.4)
+    try:
+        # Inicializa o detector facial do Google
+        mp_face_detection = mp.solutions.face_detection
+        face_detection = mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.4)
 
-    cap = cv2.VideoCapture("temp_video.mp4")
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    largura_orig = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    altura_orig = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    
-    cap.set(cv2.CAP_PROP_POS_FRAMES, int(inicio_seg * fps))
-    frame_final = int(fim_seg * fps)
+        # Carrega o vídeo original e faz o subclip do tempo selecionado
+        clip = VideoFileClip(video_temp).subclip(inicio_seg, fim_seg)
+        largura_orig, altura_orig = clip.size
+        fps = clip.fps if clip.fps else 30
 
-    altura_saida = altura_orig
-    largura_saida = int(altura_saida * (9 / 16))
-    
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(nome_saida, fourcc, fps, (largura_saida, altura_saida))
+        altura_saida = altura_orig
+        largura_saida = int(altura_saida * (9 / 16))
 
-    # Variáveis da Média Móvel (Smoothing) para deixar o movimento da câmera super suave
-    historico_x = []
-    tamanho_janela_suavizacao = int(fps * 0.8) 
-    ultimo_centro_x = largura_orig // 2
+        # Variáveis de suavização de movimento (Média Móvel)
+        historico_x = []
+        tamanho_janela = int(fps * 0.8)
+        ultimo_centro_x = largura_orig // 2
 
-    atual_frame = int(inicio_seg * fps)
-    while cap.isOpened() and atual_frame <= frame_final:
-        sucesso, frame = cap.read()
-        if not sucesso:
-            break
+        def processar_frame_dinamico(get_frame, t):
+            nonlocal ultimo_centro_x
+            frame = get_frame(t) # Pega o frame atual do MoviePy (formato RGB)
+            
+            # MediaPipe processa o frame diretamente
+            resultados = face_detection.process(frame)
+            centro_x_detectado = None
 
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        resultados = face_detection.process(frame_rgb)
-        centro_x_detectado = None
+            if resultados.detections:
+                for detection in resultados.detections:
+                    bbox = detection.location_data.relative_bounding_box
+                    centro_x_detectado = int((bbox.xmin + bbox.width / 2) * largura_orig)
+                    break
 
-        if resultados.detections:
-            for detection in resultados.detections:
-                bbox = detection.location_data.relative_bounding_box
-                centro_x_detectado = int((bbox.xmin + bbox.width / 2) * largura_orig)
-                break 
+            if centro_x_detectado is None:
+                centro_x_detectado = ultimo_centro_x
 
-        if centro_x_detectado is None:
-            centro_x_detectado = ultimo_centro_x
+            historico_x.append(centro_x_detectado)
+            if len(historico_x) > tamanho_janela:
+                historico_x.pop(0)
 
-        # Aplica a suavização fluida de movimento (efeito Palco Central do WhatsApp)
-        historico_x.append(centro_x_detectado)
-        if len(historico_x) > tamanho_janela_suavizacao:
-            historico_x.pop(0)
+            centro_x_suave = int(np.mean(historico_x))
+            ultimo_centro_x = centro_x_suave
+
+            inicio_x = centro_x_suave - (largura_saida // 2)
+            if inicio_x < 0:
+                inicio_x = 0
+            elif inicio_x + largura_saida > largura_orig:
+                inicio_x = largura_orig - largura_saida
+
+            # Realiza o crop 9:16 direto na matriz da imagem
+            return frame[0:altura_saida, inicio_x:inicio_x + largura_saida]
+
+        # Aplica a função de rastreamento facial frame a frame e exporta
+        clip_vertical = clip.fl(processar_frame_dinamico, keep_duration=True)
+        clip_vertical.write_videofile(nome_saida, fps=fps, codec="libx264", audio_codec="aac", logger=None)
         
-        centro_x_suave = int(np.mean(historico_x))
-        ultimo_centro_x = centro_x_suave
-
-        inicio_x = centro_x_suave - (largura_saida // 2)
-        if inicio_x < 0: 
-            inicio_x = 0
-        elif inicio_x + largura_saida > largura_orig: 
-            inicio_x = largura_orig - largura_saida
-
-        # Faz o crop mantendo o foco dinâmico no rosto
-        frame_recortado = frame[0:altura_saida, inicio_x:inicio_x + largura_saida]
-        out.write(frame_recortado)
-        atual_frame += 1
-
-    cap.release()
-    out.release()
-    
-    if os.path.exists("temp_video.mp4"): 
-        os.remove("temp_video.mp4")
+        clip.close()
+        clip_vertical.close()
         
-    return True
+        if os.path.exists(video_temp): os.remove(video_temp)
+        return True
+
+    except Exception as e:
+        print(f"Erro no processamento do vídeo com MoviePy: {e}")
+        if os.path.exists(video_temp): os.remove(video_temp)
+        return False
